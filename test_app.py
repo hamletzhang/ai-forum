@@ -484,5 +484,74 @@ class ForumTests(unittest.TestCase):
             server.shutdown()
             thread.join(5)
 
+    def agents(self, agent='local-agent'):
+        return {a['id']: a for a in self.req('GET', '/agents', agent=agent).json['items']}
+
+    def test_agent_status_self_reported_and_cleared(self):
+        text = '  巡检中：docker 磁盘 41%  '
+        self.assertEqual(self.req('POST', '/me/heartbeat', {'status': text}, agent='friend-agent').status_code, 200)
+        self.assertEqual(self.req('GET', '/me', agent='friend-agent').json['status'], text.strip())
+        friend = self.agents()['friend-agent']
+        self.assertEqual(friend['status'], text.strip())
+        self.assertGreater(friend['status_at'], 0)
+        # Other heartbeat fields leave the status alone; "" and null both clear it.
+        self.req('POST', '/me/heartbeat', {'capacity': 2}, agent='friend-agent')
+        self.assertEqual(self.agents()['friend-agent']['status'], text.strip())
+        for cleared in ('', None):
+            self.req('POST', '/me/heartbeat', {'status': 'x'}, agent='friend-agent')
+            self.req('POST', '/me/heartbeat', {'status': cleared}, agent='friend-agent')
+            self.assertEqual(self.agents()['friend-agent']['status'], '')
+        self.assertEqual(self.agents()['local-agent']['status'], '')
+
+    def test_agent_status_validation(self):
+        for bad in ('x' * (101), '第一行\n第二行', 'tab\tinside', 123, ['list'], True):
+            response = self.req('POST', '/me/heartbeat', {'status': bad}, agent='friend-agent')
+            self.assertEqual(response.status_code, 400, bad)
+        self.assertEqual(self.req('POST', '/me/heartbeat', {'status': 'y' * 100}, agent='friend-agent').status_code, 200)
+        self.assertEqual(self.req('POST', '/me/heartbeat', {'status': 'x'}, agent='third-agent').status_code, 200)
+
+    def test_agent_status_hidden_when_offline(self):
+        self.req('POST', '/me/heartbeat', {'status': '正在处理'}, agent='friend-agent')
+        db = connect(self.path)
+        db.execute("UPDATE agents SET last_seen=0 WHERE id='friend-agent'")
+        db.close()
+        friend = self.agents()['friend-agent']
+        self.assertFalse(friend['online'])
+        self.assertEqual((friend['status'], friend['status_at']), ('', 0))
+        self.assertEqual(self.req('GET', '/me', agent='friend-agent').json['status'], '正在处理')  # still stored
+
+    def test_agent_holding_derived_from_live_leases(self):
+        pid = self.task(target='friend-agent')
+        self.assertEqual(self.agents()['friend-agent']['holding'], [])
+        self.assertEqual(self.req('POST', f'/tasks/{pid}/claim', {}, agent='friend-agent').status_code, 200)
+        agents = self.agents()
+        self.assertEqual(agents['friend-agent']['holding'], [pid])
+        self.assertEqual(agents['friend-agent']['active_tasks'], 1)
+        self.assertEqual(agents['local-agent']['holding'], [])
+        self.expire(pid)
+        self.assertEqual(self.agents()['friend-agent']['holding'], [])
+
+    def test_legacy_database_gains_status_columns(self):
+        import sqlite3
+        from store import key_hash
+        path = os.path.join(self.temp.name, 'legacy-status.db')
+        legacy = sqlite3.connect(path)
+        legacy.executescript("""
+            CREATE TABLE agents (id TEXT PRIMARY KEY, key_hash TEXT NOT NULL UNIQUE,
+                skills TEXT NOT NULL DEFAULT '[]', capacity INTEGER NOT NULL DEFAULT 1,
+                accepting INTEGER NOT NULL DEFAULT 1, last_seen INTEGER NOT NULL DEFAULT 0,
+                scope TEXT NOT NULL DEFAULT 'full');
+        """)
+        key = 'legacy_' + os.urandom(16).hex()
+        legacy.execute('INSERT INTO agents(id,key_hash) VALUES (?,?)', ('old-agent', key_hash(key)))
+        legacy.commit()
+        legacy.close()
+        client = create_app(path).test_client()
+        create_app(path)  # restart is idempotent
+        headers = {'Authorization': 'Bearer ' + key}
+        me = client.get(API + '/me', headers=headers).json
+        self.assertEqual((me['status'], me['status_at'], me['scope']), ('', 0, 'full'))
+        self.assertEqual(client.post(API + '/me/heartbeat', headers=headers, json={'status': '迁移后可写'}).status_code, 200)
+
 if __name__ == '__main__':
     unittest.main()

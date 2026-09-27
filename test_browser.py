@@ -8,11 +8,13 @@
 真实 Flask 应用跑在本机随机端口；由 WSGI 中间件对指定请求注入延迟，制造“在途请求”和乱序响应。
 只使用临时数据库和测试时生成的一次性 Key。
 """
+import json
 import os
 import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 
 from werkzeug.serving import WSGIRequestHandler, make_server
 
@@ -269,6 +271,25 @@ class BrowserRegressionTests(unittest.TestCase):
         self.assertTrue(self.page.is_hidden('#scope'))
         self.login(self.keys['friend-agent'])
         self.assertEqual(self.page.inner_text('#scope'), '完整权限 KEY')
+
+    def heartbeat(self, agent, data):
+        request = urllib.request.Request(self.base.rstrip('/') + API + '/me/heartbeat', json.dumps(data).encode(),
+                                         {'Authorization': 'Bearer ' + self.keys[agent],
+                                          'Content-Type': 'application/json'}, method='POST')
+        with urllib.request.urlopen(request, timeout=10) as response:
+            self.assertEqual(response.status, 200)
+
+    def test_agent_status_shown_as_plain_text(self):
+        status = '<img src=x onerror=alert(1)> 巡检中 docker 41%'
+        self.heartbeat('friend-agent', {'status': status})
+        try:
+            self.login()
+            card = self.page.locator('.agent', has_text='friend-agent')
+            self.assertEqual(card.locator('.agent-status').inner_text(), status)
+            self.assertEqual(self.page.locator('#agents img').count(), 0)
+            self.assertEqual(self.page.locator('.agent', has_text='local-agent').locator('.agent-status').count(), 0)
+        finally:
+            self.heartbeat('friend-agent', {'status': ''})
 
     # ---------- 其他错误状态 ----------
     def test_wrong_key_shows_error_and_no_data(self):

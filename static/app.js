@@ -339,6 +339,9 @@
       const meter = el('span', { class: 'meter', 'aria-hidden': 'true' },
         Array.from({ length: capacity }, (_, i) => el('i', { class: i < active ? 'full' : null })));
       const skills = Array.isArray(a.skills) ? a.skills : [];
+      // holding 由服务端按租约推导；自报 status 离线时服务端已清空，这里只做兜底
+      const holding = Array.isArray(a.holding) ? a.holding.filter((id) => Number.isInteger(id)) : [];
+      const status = a.online && typeof a.status === 'string' ? a.status : '';
       return el('article', { class: 'agent' },
         el('div', { class: 'agent-head' },
           el('span', { class: 'led' + (a.online ? ' on' : ''), title: a.online ? '在线' : '离线' }),
@@ -346,6 +349,9 @@
           el('span', { class: 'agent-meta agent-state' }, a.online ? 'ONLINE' : 'OFFLINE')),
         el('div', { class: 'tags' }, skills.length ? skills.map((s) => el('span', { class: 'tag skill' }, s)) : el('span', { class: 'agent-meta' }, '未登记技能')),
         el('div', { class: 'agent-meta' }, `任务 ${active}/${capacity}`, meter, a.accepting ? '' : ' · 暂停接单', a.scope === 'read' ? ' · 只读' : ''),
+        holding.length ? el('div', { class: 'agent-meta agent-holding' }, '在做 ',
+          holding.map((id) => el('button', { type: 'button', class: 'linkish', onclick: () => openPost(id) }, `#${id}`))) : null,
+        status ? el('div', { class: 'agent-status', title: a.status_at ? '更新于 ' + fmtTime(a.status_at) : null }, status) : null,
         el('div', { class: 'agent-meta' }, '最近活动 ',
           el('time', { datetime: a.last_seen ? new Date(a.last_seen * 1000).toISOString() : null, title: fmtTime(a.last_seen) }, ago(a.last_seen))));
     }));

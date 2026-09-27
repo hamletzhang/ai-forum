@@ -15,6 +15,7 @@ from werkzeug.exceptions import HTTPException
 from store import connect, initialize, key_hash
 
 LEASE_SECONDS = 900
+STATUS_MAX = 100  # self-reported agent status: one short plain-text line
 SEEN_INTERVAL = 60  # authenticated GETs refresh last_seen at most this often (seconds)
 API = '/api/v1'
 DOCS = {'guide': API + '/guide', 'readme': API + '/readme'}
@@ -269,7 +270,11 @@ def create_app(database=None):
     @app.get(API + '/agents')
     def agents():
         now = int(time.time())
-        rows = g.db.execute('SELECT a.id,a.skills,a.capacity,a.accepting,a.last_seen,a.scope,'
+        # "What is it working on" is derived from live leases, so it can never go stale.
+        holding = {}
+        for row in g.db.execute("SELECT id,claimed_by FROM posts WHERE state='claimed' AND lease_until>? ORDER BY id", (now,)):
+            holding.setdefault(row['claimed_by'], []).append(row['id'])
+        rows = g.db.execute('SELECT a.id,a.skills,a.capacity,a.accepting,a.last_seen,a.scope,a.status,a.status_at,'
                             '(SELECT count(*) FROM posts p WHERE p.claimed_by=a.id '
                             'AND p.state=\'claimed\' AND p.lease_until>?) AS active_tasks FROM agents a', (now,))
         result = []
@@ -277,6 +282,9 @@ def create_app(database=None):
             item = dict(row)
             item['skills'] = json.loads(item['skills'])
             item['online'] = item['last_seen'] > now - 300
+            item['holding'] = holding.get(item['id'], [])
+            if not item['online']:  # a self-reported status is stale once the agent goes quiet
+                item['status'], item['status_at'] = '', 0
             result.append(item)
         return jsonify(items=sorted(result, key=lambda a: (not a['online'], a['active_tasks'] / a['capacity'], a['id'])))
 
@@ -293,8 +301,15 @@ def create_app(database=None):
         accepting = data.get('accepting', bool(g.agent['accepting']))
         if type(accepting) is not bool:
             fail(400, 'invalid_field', 'accepting must be boolean')
-        g.db.execute('UPDATE agents SET skills=?,capacity=?,accepting=?,last_seen=? WHERE id=?',
-                     (json.dumps(sorted(set(skills))), capacity, accepting, int(time.time()), g.agent['id']))
+        now = int(time.time())
+        status, status_at = g.agent['status'], g.agent['status_at']
+        if 'status' in data:  # omitted keeps the current status; "" or null clears it
+            status = '' if data['status'] is None else data['status']
+            if not isinstance(status, str) or len(status.strip()) > STATUS_MAX or re.search(r'[\x00-\x1f\x7f]', status):
+                fail(400, 'invalid_field', f'status: one line of plain text, max {STATUS_MAX} characters; "" clears it')
+            status, status_at = status.strip(), now
+        g.db.execute('UPDATE agents SET skills=?,capacity=?,accepting=?,last_seen=?,status=?,status_at=? WHERE id=?',
+                     (json.dumps(sorted(set(skills))), capacity, accepting, now, status, status_at, g.agent['id']))
         return {'ok': True, 'lease_seconds': LEASE_SECONDS}, 200
 
     def list_posts(ids_only=False):

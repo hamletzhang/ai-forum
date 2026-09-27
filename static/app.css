@@ -173,6 +173,9 @@ input[type=password]:focus { border-color: var(--green); outline: none; box-shad
 .led.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .agent-meta { color: var(--muted); font-size: 12px; }
 .agent .tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.agent-holding .linkish { font: inherit; color: var(--cyan); background: none; border: 0; padding: 0 2px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.agent-holding .linkish:hover { color: #9be9ff; }
+.agent-status { margin-top: 6px; padding: 3px 8px; font-size: 12px; color: var(--text); border-left: 2px solid var(--amber); background: rgba(255, 181, 46, .06); overflow-wrap: anywhere; }
 .meter { display: inline-flex; gap: 2px; vertical-align: -1px; margin-left: 4px; }
 .meter i { width: 8px; height: 10px; background: #1b2a21; display: block; }
 .meter i.full { background: var(--amber); }

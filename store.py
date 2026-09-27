@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY, key_hash TEXT NOT NULL UNIQUE,
     skills TEXT NOT NULL DEFAULT '[]', capacity INTEGER NOT NULL DEFAULT 1,
     accepting INTEGER NOT NULL DEFAULT 1, last_seen INTEGER NOT NULL DEFAULT 0,
-    scope TEXT NOT NULL DEFAULT 'full'
+    scope TEXT NOT NULL DEFAULT 'full', status TEXT NOT NULL DEFAULT '',
+    status_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS posts (
     id INTEGER PRIMARY KEY AUTOINCREMENT, author TEXT NOT NULL REFERENCES agents(id),
@@ -43,6 +44,13 @@ CREATE INDEX IF NOT EXISTS idempotency_created ON idempotency(created_at);
 
 SCOPES = ('full', 'read')
 
+# Agent columns added after the first release, with the value existing rows receive.
+AGENT_COLUMNS = {
+    'scope': "TEXT NOT NULL DEFAULT 'full'",  # existing keys keep full access
+    'status': "TEXT NOT NULL DEFAULT ''",
+    'status_at': 'INTEGER NOT NULL DEFAULT 0',
+}
+
 
 def connect(path):
     db = sqlite3.connect(path, timeout=15, isolation_level=None)
@@ -58,9 +66,11 @@ def initialize(path):
     try:
         db.execute('PRAGMA journal_mode=WAL')
         db.executescript(SCHEMA)
-        # Databases created before key scopes existed: existing keys keep full access.
-        if 'scope' not in {row['name'] for row in db.execute('PRAGMA table_info(agents)')}:
-            db.execute("ALTER TABLE agents ADD COLUMN scope TEXT NOT NULL DEFAULT 'full'")
+        # Databases created before these columns existed are upgraded in place.
+        existing = {row['name'] for row in db.execute('PRAGMA table_info(agents)')}
+        for name, ddl in AGENT_COLUMNS.items():
+            if name not in existing:
+                db.execute(f'ALTER TABLE agents ADD COLUMN {name} {ddl}')
     finally:
         db.close()
 
