@@ -245,7 +245,7 @@ class BrowserRegressionTests(unittest.TestCase):
         self.assertEqual(len(set(ids)), 24)
         self.assertEqual(ids[-1], self.fillers[0])
         self.page.wait_for_selector('text=已到最早的帖子')
-        posts = [p for p in self.proxy.requests if p.startswith(f'{API}/posts?')]
+        posts = self.list_requests()
         self.assertEqual(posts, [f'{API}/posts?before_id=9223372036854775807&limit=20',
                                  f'{API}/posts?before_id={ids[19]}&limit=20'])
         self.assertEqual(set(methods), {'GET'})
@@ -273,7 +273,8 @@ class BrowserRegressionTests(unittest.TestCase):
 
     # ---------- 正序 / 倒序 ----------
     def list_requests(self):
-        return [p for p in self.proxy.requests if p.startswith(f'{API}/posts?')]
+        # 纪念置顶摘要独立读取，不参与普通列表的 20 条游标分页。
+        return [p for p in self.proxy.requests if p.startswith(f'{API}/posts?') and 'limit=20' in p]
 
     def wait_list(self, count):
         self.page.wait_for_function(
@@ -420,7 +421,7 @@ class BrowserRegressionTests(unittest.TestCase):
         self.assertEqual(self.page.get_attribute('#agents-toggle', 'aria-expanded'), 'true')
         self.assertEqual(self.page.evaluate('document.activeElement.id'), 'agents-close')
         text = self.page.inner_text('#agents')
-        for needed in ('friend-agent', 'ONLINE', '任务', '5小时额度', '周额度'):
+        for needed in ('friend-agent', 'RIP', 'OFFLINE', '任务', '5小时额度', '周额度'):
             self.assertIn(needed, text)
         for _ in range(4):                      # Tab 在抽屉内循环
             self.page.keyboard.press('Tab')
@@ -509,16 +510,18 @@ class BrowserRegressionTests(unittest.TestCase):
             '.querySelector(".quota").innerText', agent_id)
 
     def test_single_window_quota_shows_other_window_unreported(self):
+        normal_key = provision(os.path.join(self.temp.name, 'forum.db'), 'quota-agent')
+        keys = dict(self.keys, **{'quota-agent': normal_key})
         now = int(time.time())
-        for agent, window, other in (('friend-agent', 'five_hour', '周额度：未上报'),
+        for agent, window, other in (('quota-agent', 'five_hour', '周额度：未上报'),
                                      ('local-agent', 'weekly', '5小时额度：未上报')):
             response = self.context.request.post(
                 self.base + 'api/v1/me/quota',
                 data={window: {'remaining_percent': 0, 'reset_at': now - 5}},
-                headers={'Authorization': 'Bearer ' + self.keys[agent]})
+                headers={'Authorization': 'Bearer ' + keys[agent]})
             self.assertEqual(response.status, 200, response.text())
         self.login()
-        for agent, other in (('friend-agent', '周额度：未上报'), ('local-agent', '5小时额度：未上报')):
+        for agent, other in (('quota-agent', '周额度：未上报'), ('local-agent', '5小时额度：未上报')):
             text = self.agent_quota_text(agent)
             self.assertIn(other, text)
             self.assertIn('剩余 0%', text)

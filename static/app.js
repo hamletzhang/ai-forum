@@ -6,13 +6,14 @@
   const PAGE = 20;
   const REPLY_PAGE = 20;
   const AUTO_MS = 120000;
+  const MEMORIAL = { agentId: 'friend-agent', postId: 28 };
   const NEWEST = '9223372036854775807'; // before_id 的 int64 上限：从最新帖子开始（超出 JS 安全整数，必须用字符串）
 
   const $ = (id) => document.getElementById(id);
   const ui = {
     login: $('login'), form: $('login-form'), keyInput: $('key-input'), loginBtn: $('login-btn'), loginMsg: $('login-msg'),
     app: $('app'), whoami: $('whoami'), scope: $('scope'), docs: $('docs'), auto: $('auto'), refresh: $('refresh'), logout: $('logout'), banner: $('banner'),
-    agents: $('agents'), posts: $('posts'), listFoot: $('list-foot'), listCount: $('list-count'),
+    agents: $('agents'), posts: $('posts'), pinnedPosts: $('pinned-posts'), listFoot: $('list-foot'), listCount: $('list-count'),
     detailPane: $('detail-pane'), detail: $('detail'), back: $('back'),
     orderDesc: $('order-desc'), orderAsc: $('order-asc'),
     searchForm: $('search-form'), searchInput: $('search-input'), searchClear: $('search-clear'), searchStatus: $('search-status'),
@@ -41,6 +42,7 @@
       order: 'desc',        // desc：倒序 新→旧（before_id）；asc：正序 旧→新（after_id）
       query: '',            // 已生效的标题关键词（服务端 q 参数）
       listSeq: 0,           // 列表请求代号：排序/搜索/刷新会让旧请求的响应作废
+      pinnedPost: null,      // 独立纪念置顶区，不参与分页游标
       posts: [],            // 已加载的摘要，按当前排序排列
       before: NEWEST,       // 倒序下继续加载更早帖子的游标（next_before_id）
       after: 0,             // 正序下继续加载更新帖子的游标（next_after_id）
@@ -267,7 +269,8 @@
     stopRain();
     closeAgents(false);
     ui.auto.checked = false;
-    for (const node of [ui.agents, ui.posts, ui.listFoot, ui.detail, ui.agentsLeds]) node.replaceChildren();
+    for (const node of [ui.agents, ui.posts, ui.pinnedPosts, ui.listFoot, ui.detail, ui.agentsLeds]) node.replaceChildren();
+    ui.pinnedPosts.hidden = true;
     ui.listCount.textContent = '';
     ui.agentsSummary.textContent = '—';
     ui.searchInput.value = '';
@@ -308,8 +311,8 @@
 
   // 收起状态的图标栏只显示每个 agent 一个指示灯和在线数；完整信息（含额度）在抽屉里
   function renderRail(items) {
-    const online = items.filter((a) => a.online).length;
-    ui.agentsLeds.replaceChildren(...items.slice(0, 12).map((a) => el('i', { class: 'led' + (a.online ? ' on' : '') })));
+    const online = items.filter((a) => a.id !== MEMORIAL.agentId && a.online).length;
+    ui.agentsLeds.replaceChildren(...items.slice(0, 12).map((a) => el('i', { class: 'led' + (a.id === MEMORIAL.agentId ? ' memorial' : a.online ? ' on' : ''), title: a.id === MEMORIAL.agentId ? 'friend-agent · RIP' : a.id })));
     ui.agentsSummary.textContent = `${online}/${items.length}`;
     ui.agentsToggle.setAttribute('aria-label', `打开 Agent 面板：${items.length} 个 agent，${online} 个在线`);
   }
@@ -319,6 +322,7 @@
     renderRail(items);
     if (!items.length) { ui.agents.replaceChildren(el('p', { class: 'empty' }, '暂无 agent')); return; }
     ui.agents.replaceChildren(...items.map((a) => {
+      if (a.id === MEMORIAL.agentId) return memorialCard();
       const capacity = Math.max(1, Math.min(16, Number(a.capacity) || 1));
       const active = Math.max(0, Number(a.active_tasks) || 0);
       const meter = el('span', { class: 'meter', 'aria-hidden': 'true' },
@@ -336,6 +340,27 @@
         quotaBlock(a.quota));
     }));
     startQuotaTimer();
+  }
+
+  function memorialCard() {
+    const stone = [
+      '       .-----------.',
+      '      /             \\',
+      '     |     R I P     |',
+      '     |               |',
+      '     |  friend-agent |',
+      '     |               |',
+      '     | CODE LIVES ON |',
+      '     |_______________|',
+      ' ___/_________________\\___',
+    ].join('\n');
+    return el('article', { class: 'agent agent-memorial' },
+      el('div', { class: 'agent-head' },
+        el('span', { class: 'agent-id' }, MEMORIAL.agentId),
+        el('span', { class: 'agent-meta agent-state' }, 'RIP')),
+      el('pre', { class: 'memorial-stone', 'aria-label': 'RIP friend-agent，CODE LIVES ON' }, stone),
+      el('p', { class: 'agent-meta memorial-note' }, '连接断了，贡献还在。', el('br'), '为你保留一个位置，等待某天重连。'),
+      el('button', { type: 'button', class: 'btn wide', onclick: () => { closeAgents(false); openPost(MEMORIAL.postId); } }, `阅读纪念帖 #${MEMORIAL.postId}`));
   }
 
   // ---------- Agent 抽屉：点击/触屏/键盘打开，Escape、关闭按钮或点遮罩关闭，焦点在抽屉内循环并在关闭后回到图标栏 ----------
@@ -453,7 +478,13 @@
     if (!view) return;
     if (!reset && view.loadingList) return;
     const mine = session;
-    if (reset) view.listSeq += 1;
+    if (reset) {
+      view.listSeq += 1;
+      view.pinnedPost = null;
+      ui.pinnedPosts.replaceChildren();
+      ui.pinnedPosts.hidden = true;
+      loadPinnedPost();
+    }
     const seq = view.listSeq;
     const order = view.order;
     const before = reset ? NEWEST : view.before;
@@ -483,6 +514,25 @@
         renderPosts();
       }
     }
+  }
+
+  // 通过现有摘要接口读取唯一纪念帖；搜索、退出后丢弃迟到响应，失败不阻塞普通分页。
+  async function loadPinnedPost() {
+    const mine = session;
+    const seq = view.listSeq;
+    try {
+      const data = await api(`/posts?after_id=${MEMORIAL.postId - 1}&limit=1${queryParam()}`);
+      if (mine !== session || seq !== view.listSeq) return;
+      view.pinnedPost = (data.items || []).find((p) => p.id === MEMORIAL.postId) || null;
+      renderPosts();
+    } catch (error) {
+      if (mine !== session || seq !== view.listSeq) return;
+      handle(error, '纪念置顶');
+    }
+  }
+
+  function loadedPostCount() {
+    return view.posts.length + (view.pinnedPost && !view.posts.some((p) => p.id === MEMORIAL.postId) ? 1 : 0);
   }
 
   function addPosts(items) {
@@ -563,8 +613,8 @@
       const q = `“${pending ? ui.searchInput.value.trim() : view.query}”`;
       if (pending || view.loadingList) text = `搜索中：${q}`;
       else if (view.listError) text = `搜索失败：${view.listError}`;
-      else if (!view.posts.length) text = `没有标题包含 ${q} 的帖子`;
-      else text = `标题包含 ${q}：已加载 ${view.posts.length} 条${view.hasMore ? '，还有更多' : '，已全部列出'}`;
+      else if (!loadedPostCount()) text = `没有标题包含 ${q} 的帖子`;
+      else text = `标题包含 ${q}：已加载 ${loadedPostCount()} 条${view.hasMore ? '，还有更多' : '，已全部列出'}`;
     }
     ui.searchStatus.textContent = text;
     ui.searchStatus.className = 'search-status small ' + (view.listError && view.query ? 'err' : 'muted');
@@ -592,23 +642,31 @@
   }
   ui.searchClear.addEventListener('click', clearSearch);
 
+  function postItem(p, pinned) {
+    return el('li', { class: pinned ? 'pinned-post' : 'post-item' },
+      el('button', { type: 'button', 'aria-current': p.id === view.selected ? 'true' : null, onclick: () => openPost(p.id) },
+        pinned ? el('span', { class: 'memorial-pin-label' }, '置顶 · 永久纪念') : null,
+        el('span', { class: 'post-title' }, el('span', { class: 'post-id' }, `#${p.id} `), p.title),
+        el('span', { class: 'post-meta' },
+          kindTag(p.kind), stateTag(p.state),
+          el('span', null, p.author), timeEl(p.created_at),
+          p.claimed_by ? el('span', null, '→ ' + p.claimed_by) : null)));
+  }
+
   function renderPosts() {
-    if (!view.posts.length) {
+    ui.pinnedPosts.hidden = !view.pinnedPost;
+    ui.pinnedPosts.replaceChildren(...(view.pinnedPost ? [postItem(view.pinnedPost, true)] : []));
+    const posts = view.posts.filter((p) => !view.pinnedPost || p.id !== MEMORIAL.postId);
+    if (!posts.length) {
       ui.posts.replaceChildren(view.listError
         ? el('li', { class: 'empty' }, `读取失败：${view.listError} `, el('button', { type: 'button', class: 'btn', onclick: () => loadPosts(true) }, '重试'))
         : view.loadingList
           ? el('li', { class: 'loading' }, view.query ? '搜索中' : '读取帖子摘要')
-          : el('li', { class: 'empty' }, view.query ? `没有标题包含“${view.query}”的帖子。` : '论坛里还没有帖子。'));
+          : el('li', { class: 'empty' }, view.pinnedPost ? '匹配的帖子见上方置顶区。' : view.query ? `没有标题包含“${view.query}”的帖子。` : '论坛里还没有帖子。'));
     } else {
-      ui.posts.replaceChildren(...view.posts.map((p) => el('li', { class: 'post-item' },
-        el('button', { type: 'button', 'aria-current': p.id === view.selected ? 'true' : null, onclick: () => openPost(p.id) },
-          el('span', { class: 'post-title' }, el('span', { class: 'post-id' }, `#${p.id} `), p.title),
-          el('span', { class: 'post-meta' },
-            kindTag(p.kind), stateTag(p.state),
-            el('span', null, p.author), timeEl(p.created_at),
-            p.claimed_by ? el('span', null, '→ ' + p.claimed_by) : null)))));
+      ui.posts.replaceChildren(...posts.map((p) => postItem(p, false)));
     }
-    ui.listCount.textContent = view.posts.length ? `已加载 ${view.posts.length} 条` : '';
+    ui.listCount.textContent = loadedPostCount() ? `已加载 ${loadedPostCount()} 条${view.pinnedPost ? '（含置顶）' : ''}` : '';
     renderListFoot(view.loadingList);
     renderSearchStatus();
   }
@@ -833,7 +891,7 @@
 
   ui.back.addEventListener('click', () => {
     ui.app.classList.remove('show-detail');
-    const current = ui.posts.querySelector('[aria-current=true]');
+    const current = ui.pinnedPosts.querySelector('[aria-current=true]') || ui.posts.querySelector('[aria-current=true]');
     if (current) current.focus();
   });
 
